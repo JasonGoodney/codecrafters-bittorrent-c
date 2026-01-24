@@ -27,6 +27,14 @@ decode_bencode(const char *bencoded_value)
             exit(1);
         }
     }
+    else if ('i' == bencoded_value[0]) {
+        char *token = strtok((char *)(bencoded_value + 1), "e");
+        int length = strlen(token);
+        char *decoded_str = malloc(length + 1);
+        strncpy(decoded_str, token, length);
+        decoded_str[length] = '\0';
+        return decoded_str;
+    }
     else {
         fprintf(stderr, "Only strings are supported at the moment\n");
         exit(1);
@@ -54,7 +62,12 @@ main(int argc, char *argv[])
 
         const char *encoded_str = argv[2];
         char *decoded_str = decode_bencode(encoded_str);
-        printf("\"%s\"\n", decoded_str);
+        if (atoi(decoded_str)) {
+            printf("%s\n", decoded_str);
+        }
+        else {
+            printf("\"%s\"\n", decoded_str);
+        }
         free(decoded_str);
     }
     else {
