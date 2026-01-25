@@ -45,7 +45,7 @@ struct bencode_list {
 };
 
 struct bencode_kvpair {
-    struct bencode_byte_string key;
+    struct bencode_byte_string *key;
     Bencode *value;
     uint64_t padding;
 };
@@ -107,15 +107,16 @@ char *
 decode_bencode(struct arena *arena, Bencode *bencode, char *bencoded_value);
 
 char *
-decode_byte_string(struct arena *arena, struct bencode_byte_string *bencode, char *bencoded_value)
+decode_byte_string(struct arena *arena,
+                   struct bencode_byte_string *bencode,
+                   char *bencoded_value)
 {
     int length = atoi(bencoded_value);
     size_t lengthlength = snprintf(NULL, 0, "%d", length);
     const char *colon_index = strchr(bencoded_value, ':');
     if (colon_index != NULL) {
         const char *start = colon_index + 1;
-        // bencode->value = arena_push(arena, sizeof(*bencode->value), length + 1);
-        bencode->value = malloc(length + 1);
+        bencode->value = malloc(length + 1); // TODO: free string value
         memcpy(bencode->value, start, length);
         bencode->value[length] = '\0';
         bencode->length = length;
@@ -124,34 +125,65 @@ decode_byte_string(struct arena *arena, struct bencode_byte_string *bencode, cha
         fprintf(stderr, "Invalid encoded value: %s\n", bencoded_value);
         exit(1);
     }
-    char *next = bencoded_value+length+lengthlength+1;
+    char *next = bencoded_value + length + lengthlength + 1;
     return next;
 }
 
 char *
-decode_integer(struct arena *arena, struct bencode_integer *bencode, char *bencoded_value)
+decode_integer(struct arena *arena,
+               struct bencode_integer *bencode,
+               char *bencoded_value)
 {
     char *token = strtok(bencoded_value + 1, "e");
     int64_t result = strtoll(token, NULL, 10);
     bencode->value = result;
 
-    char *next = bencoded_value+strlen(token)+2;
+    char *next = bencoded_value + strlen(token) + 2;
     return next;
 }
 
 char *
-decode_list(struct arena *arena, struct bencode_list *list, char *bencoded_value)
+decode_list(struct arena *arena,
+            struct bencode_list *list,
+            char *bencoded_value)
 {
     list->length = 0;
-    list->items = (Bencode *)arena_push(arena, sizeof(Bencode *), 8);
+    list->items = (Bencode *)arena_push(
+        arena, sizeof(Bencode *), 8); // TODO: fix hardcoded size
     bencoded_value++;
     while (*bencoded_value != '\0' && *bencoded_value != 'e') {
 
-        bencoded_value = decode_bencode(arena, &list->items[list->length], bencoded_value);
+        bencoded_value =
+            decode_bencode(arena, &list->items[list->length], bencoded_value);
         list->length++;
     }
 
-    return bencoded_value+1;
+    return bencoded_value + 1;
+}
+
+char *
+decode_dictionary(struct arena *arena,
+                  struct bencode_dictionary *dict,
+                  char *bencoded_value)
+{
+    dict->length = 0;
+    dict->kvpairs = (struct bencode_kvpair *)arena_push(
+        arena, sizeof(*dict->kvpairs), 8); // TODO: fix hardcoded size
+
+    bencoded_value++;
+    while (*bencoded_value != '\0' && *bencoded_value != 'e') {
+        dict->kvpairs[dict->length].key = arena_push(arena, sizeof(struct bencode_byte_string), 1);
+        bencoded_value = decode_bencode(
+            arena, (Bencode *)dict->kvpairs[dict->length].key, bencoded_value);
+
+        dict->kvpairs[dict->length].value = arena_push(arena, sizeof(Bencode), 1);
+        bencoded_value = decode_bencode(
+            arena, dict->kvpairs[dict->length].value, bencoded_value);
+
+        dict->length++;
+    }
+
+    return bencoded_value + 1;
 }
 
 char *
@@ -159,15 +191,23 @@ decode_bencode(struct arena *arena, Bencode *bencode, char *bencoded_value)
 {
     if (is_digit(bencoded_value[0])) {
         bencode->type = BENCODE_BYTE_STRING;
-        bencoded_value = decode_byte_string(arena, (struct bencode_byte_string*)bencode, bencoded_value);
+        bencoded_value = decode_byte_string(
+            arena, (struct bencode_byte_string *)bencode, bencoded_value);
     }
     else if ('i' == bencoded_value[0]) {
         bencode->type = BENCODE_INTEGER;
-        bencoded_value = decode_integer(arena, (struct bencode_integer *)bencode, bencoded_value);
+        bencoded_value = decode_integer(
+            arena, (struct bencode_integer *)bencode, bencoded_value);
     }
     else if ('l' == bencoded_value[0]) {
         bencode->type = BENCODE_LIST;
-        bencoded_value = decode_list(arena, (struct bencode_list *)bencode, bencoded_value);
+        bencoded_value =
+            decode_list(arena, (struct bencode_list *)bencode, bencoded_value);
+    }
+    else if ('d' == bencoded_value[0]) {
+        bencode->type = BENCODE_DICTIONARY;
+        bencoded_value = decode_dictionary(
+            arena, (struct bencode_dictionary *)bencode, bencoded_value);
     }
     else {
         fprintf(stderr, "Only strings are supported at the moment\n");
@@ -184,7 +224,8 @@ struct string_builder {
 };
 
 struct string_builder
-string_builder_init(size_t capacity) {
+string_builder_init(size_t capacity)
+{
     struct string_builder sb = {0};
     sb.capacity = capacity;
     sb.buffer = malloc(capacity);
@@ -192,16 +233,23 @@ string_builder_init(size_t capacity) {
 }
 
 char *
-string_builder_string(struct string_builder *sb) {
+string_builder_string(struct string_builder *sb)
+{
     return sb->buffer;
 }
 
-void string_builder_append_string(struct string_builder *sb, char *string, size_t length) {
+void
+string_builder_append_string(struct string_builder *sb,
+                             char *string,
+                             size_t length)
+{
     memcpy(sb->buffer + sb->length, string, length);
     sb->length += length;
 }
 
-void string_builder_append_int64(struct string_builder *sb, int64_t value) {
+void
+string_builder_append_int64(struct string_builder *sb, int64_t value)
+{
     char tmp[1024];
 
     size_t length = snprintf(tmp, sizeof(tmp), "%lld", value);
@@ -209,17 +257,21 @@ void string_builder_append_int64(struct string_builder *sb, int64_t value) {
     string_builder_append_string(sb, tmp, length);
 }
 
-char *string_builder_end(struct string_builder *sb) {
+char *
+string_builder_end(struct string_builder *sb)
+{
     sb->buffer[sb->length] = '\0';
     return sb->buffer;
 }
 
 char *
-bencode_stringify(struct string_builder *sb, Bencode *bencode) {
+bencode_stringify(struct string_builder *sb, Bencode *bencode)
+{
 
     if (bencode->type == BENCODE_BYTE_STRING) {
         string_builder_append_string(sb, "\"", 1);
-        string_builder_append_string(sb, bencode->byte_string.value, bencode->byte_string.length);
+        string_builder_append_string(
+            sb, bencode->byte_string.value, bencode->byte_string.length);
         string_builder_append_string(sb, "\"", 1);
     }
     else if (bencode->type == BENCODE_INTEGER) {
@@ -235,6 +287,20 @@ bencode_stringify(struct string_builder *sb, Bencode *bencode) {
             bencode_stringify(sb, item);
         }
         string_builder_append_string(sb, "]", 1);
+    }
+    else if (bencode->type == BENCODE_DICTIONARY) {
+        char *delim = "";
+        string_builder_append_string(sb, "{", 1);
+        for (int i = 0; i < bencode->dictionary.length; i++) {
+            string_builder_append_string(sb, delim, strlen(delim));
+            delim = ",";
+
+            struct bencode_kvpair *kvpair = &bencode->dictionary.kvpairs[i];
+            bencode_stringify(sb, (Bencode *)kvpair->key);
+            string_builder_append_string(sb, ":", 1);
+            bencode_stringify(sb, kvpair->value);
+        }
+        string_builder_append_string(sb, "}", 1);
     }
 
     return string_builder_string(sb);
@@ -265,7 +331,7 @@ main(int argc, char *argv[])
         char *encoded_str = argv[2];
         Bencode *bencode = arena_push(&arena, sizeof(*bencode), 1);
         decode_bencode(&arena, bencode, encoded_str);
-        struct string_builder sb = string_builder_init(1024*1024);
+        struct string_builder sb = string_builder_init(1024 * 1024);
         char *string = bencode_stringify(&sb, bencode);
         string_builder_end(&sb);
         printf("%s\n", string);
