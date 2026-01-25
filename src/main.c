@@ -177,25 +177,67 @@ decode_bencode(struct arena *arena, Bencode *bencode, char *bencoded_value)
     return bencoded_value;
 }
 
-void
-bencode_print(Bencode *bencode) {
+struct string_builder {
+    char *buffer;
+    size_t capacity;
+    size_t length;
+};
+
+struct string_builder
+string_builder_init(size_t capacity) {
+    struct string_builder sb = {0};
+    sb.capacity = capacity;
+    sb.buffer = malloc(capacity);
+    return sb;
+}
+
+char *
+string_builder_string(struct string_builder *sb) {
+    return sb->buffer;
+}
+
+void string_builder_append_string(struct string_builder *sb, char *string, size_t length) {
+    memcpy(sb->buffer + sb->length, string, length);
+    sb->length += length;
+}
+
+void string_builder_append_int64(struct string_builder *sb, int64_t value) {
+    char tmp[1024];
+
+    size_t length = snprintf(tmp, sizeof(tmp), "%lld", value);
+    tmp[length] = '\0';
+    string_builder_append_string(sb, tmp, length);
+}
+
+char *string_builder_end(struct string_builder *sb) {
+    sb->buffer[sb->length] = '\0';
+    return sb->buffer;
+}
+
+char *
+bencode_stringify(struct string_builder *sb, Bencode *bencode) {
+
     if (bencode->type == BENCODE_BYTE_STRING) {
-        printf("\"%s\"", bencode->byte_string.value);
+        string_builder_append_string(sb, "\"", 1);
+        string_builder_append_string(sb, bencode->byte_string.value, bencode->byte_string.length);
+        string_builder_append_string(sb, "\"", 1);
     }
     else if (bencode->type == BENCODE_INTEGER) {
-        printf("%lld", bencode->integer.value);
+        string_builder_append_int64(sb, bencode->integer.value);
     }
     else if (bencode->type == BENCODE_LIST) {
         char *delim = "";
-        printf("[");
+        string_builder_append_string(sb, "[", 1);
         for (int i = 0; i < bencode->list.length; i++) {
-            printf("%s", delim);
+            string_builder_append_string(sb, delim, strlen(delim));
             delim = ",";
             Bencode *item = &bencode->list.items[i];
-            bencode_print(item);
+            bencode_stringify(sb, item);
         }
-        printf("]");
+        string_builder_append_string(sb, "]", 1);
     }
+
+    return string_builder_string(sb);
 }
 
 int
@@ -223,8 +265,10 @@ main(int argc, char *argv[])
         char *encoded_str = argv[2];
         Bencode *bencode = arena_push(&arena, sizeof(*bencode), 1);
         decode_bencode(&arena, bencode, encoded_str);
-        bencode_print(bencode);
-        printf("\n");
+        struct string_builder sb = string_builder_init(1024*1024);
+        char *string = bencode_stringify(&sb, bencode);
+        string_builder_end(&sb);
+        printf("%s\n", string);
     }
     else {
         fprintf(stderr, "Unknown command: %s\n", command);
