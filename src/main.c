@@ -31,7 +31,7 @@ struct bencode_integer {
 struct bencode_byte_string {
     enum bencode_type type;
     uint32_t padding1;
-    char *value;
+    char *buffer;
     size_t length;
     uint64_t padding2;
 };
@@ -116,9 +116,9 @@ decode_byte_string(struct arena *arena,
     const char *colon_index = strchr(bencoded_value, ':');
     if (colon_index != NULL) {
         const char *start = colon_index + 1;
-        bencode->value = malloc(length + 1); // TODO: free string value
-        memcpy(bencode->value, start, length);
-        bencode->value[length] = '\0';
+        bencode->buffer = malloc(length + 1); // TODO: free string value
+        memcpy(bencode->buffer, start, length);
+        bencode->buffer[length] = '\0';
         bencode->length = length;
     }
     else {
@@ -172,11 +172,13 @@ decode_dictionary(struct arena *arena,
 
     bencoded_value++;
     while (*bencoded_value != '\0' && *bencoded_value != 'e') {
-        dict->kvpairs[dict->length].key = arena_push(arena, sizeof(struct bencode_byte_string), 1);
+        dict->kvpairs[dict->length].key =
+            arena_push(arena, sizeof(struct bencode_byte_string), 1);
         bencoded_value = decode_bencode(
             arena, (Bencode *)dict->kvpairs[dict->length].key, bencoded_value);
 
-        dict->kvpairs[dict->length].value = arena_push(arena, sizeof(Bencode), 1);
+        dict->kvpairs[dict->length].value =
+            arena_push(arena, sizeof(Bencode), 1);
         bencoded_value = decode_bencode(
             arena, dict->kvpairs[dict->length].value, bencoded_value);
 
@@ -271,7 +273,7 @@ bencode_stringify(struct string_builder *sb, Bencode *bencode)
     if (bencode->type == BENCODE_BYTE_STRING) {
         string_builder_append_string(sb, "\"", 1);
         string_builder_append_string(
-            sb, bencode->byte_string.value, bencode->byte_string.length);
+            sb, bencode->byte_string.buffer, bencode->byte_string.length);
         string_builder_append_string(sb, "\"", 1);
     }
     else if (bencode->type == BENCODE_INTEGER) {
@@ -335,6 +337,46 @@ main(int argc, char *argv[])
         char *string = bencode_stringify(&sb, bencode);
         string_builder_end(&sb);
         printf("%s\n", string);
+    }
+    else if (0 == strcmp(command, "info")) {
+        char filename[4096];
+        size_t len = snprintf(filename, sizeof(filename), "../%s", argv[2]);
+        filename[len] = '\0';
+        FILE *fh = fopen(filename, "rb");
+        assert(fh != NULL);
+        char buffer[4096];
+        size_t read = fread(&buffer, sizeof(*buffer), sizeof(buffer), fh);
+        assert(read > 0);
+        int closed = fclose(fh);
+        assert(closed >= 0);
+
+        Bencode *bencode = arena_push(&arena, sizeof(*bencode), 1);
+        decode_bencode(&arena, bencode, buffer);
+        struct bencode_dictionary *dict = &bencode->dictionary;
+        for (int i = 0; i < dict->length; i++) {
+            char *key = dict->kvpairs[i].key->buffer;
+            Bencode *value = dict->kvpairs[i].value;
+            if (0 == strcmp(key, "announce") && value->type == BENCODE_BYTE_STRING) {
+                printf("Tracker URL: %s\n", value->byte_string.buffer);
+                break;
+            }
+        }
+        for (int i = 0; i < dict->length; i++) {
+            char *key = dict->kvpairs[i].key->buffer;
+            Bencode *value = dict->kvpairs[i].value;
+            if (0 == strcmp(key, "info") && value->type == BENCODE_DICTIONARY) {
+                struct bencode_dictionary child = value->dictionary;
+                for (int j = 0; j < child.length; j++) {
+                    char *key = child.kvpairs[j].key->buffer;
+                    Bencode *value = child.kvpairs[j].value;
+                    if (0 == strcmp(key, "length") && value->type == BENCODE_INTEGER) {
+                        printf("Length: %lld\n", value->integer.value);
+                        break;
+                    }
+                }
+                break;
+            }
+        }
     }
     else {
         fprintf(stderr, "Unknown command: %s\n", command);
