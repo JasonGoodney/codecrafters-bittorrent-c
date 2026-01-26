@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <openssl/evp.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -250,6 +251,13 @@ string_builder_append_string(struct string_builder *sb,
 }
 
 void
+string_builder_append_char(struct string_builder *sb, char c)
+{
+    char str[1] = {c};
+    string_builder_append_string(sb, str, 1);
+}
+
+void
 string_builder_append_int64(struct string_builder *sb, int64_t value)
 {
     char tmp[1024];
@@ -308,6 +316,66 @@ bencode_stringify(struct string_builder *sb, Bencode *bencode)
     return string_builder_string(sb);
 }
 
+void
+bencode_encode(struct string_builder *sb, Bencode *bencode);
+
+void
+bencode_encode_string(struct string_builder *sb, struct bencode_byte_string *s)
+{
+    string_builder_append_int64(sb, s->length);
+    string_builder_append_char(sb, ':');
+    string_builder_append_string(sb, s->buffer, s->length);
+}
+
+void
+bencode_encode_integer(struct string_builder *sb, struct bencode_integer *i)
+{
+    string_builder_append_char(sb, 'i');
+    string_builder_append_int64(sb, i->value);
+    string_builder_append_char(sb, 'e');
+}
+
+void
+bencode_encode_list(struct string_builder *sb, struct bencode_list *list)
+{
+    string_builder_append_char(sb, 'l');
+    for (int i = 0; i < list->length; i++) {
+        bencode_encode(sb, (Bencode *)&list->items[i]);
+    }
+    string_builder_append_char(sb, 'e');
+}
+
+void
+bencode_encode_dictionary(struct string_builder *sb,
+                          struct bencode_dictionary *dict)
+{
+    string_builder_append_char(sb, 'd');
+    for (int i = 0; i < dict->length; i++) {
+        struct bencode_byte_string *key = dict->kvpairs[i].key;
+        Bencode *value = dict->kvpairs[i].value;
+        bencode_encode_string(sb, key);
+        bencode_encode(sb, value);
+    }
+    string_builder_append_char(sb, 'e');
+}
+
+void
+bencode_encode(struct string_builder *sb, Bencode *bencode)
+{
+    if (bencode->type == BENCODE_BYTE_STRING) {
+        bencode_encode_string(sb, (struct bencode_byte_string *)bencode);
+    }
+    else if (bencode->type == BENCODE_INTEGER) {
+        bencode_encode_integer(sb, (struct bencode_integer *)bencode);
+    }
+    else if (bencode->type == BENCODE_LIST) {
+        bencode_encode_list(sb, (struct bencode_list *)bencode);
+    }
+    else if (bencode->type == BENCODE_DICTIONARY) {
+        bencode_encode_dictionary(sb, (struct bencode_dictionary *)bencode);
+    }
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -356,25 +424,44 @@ main(int argc, char *argv[])
         for (int i = 0; i < dict->length; i++) {
             char *key = dict->kvpairs[i].key->buffer;
             Bencode *value = dict->kvpairs[i].value;
-            if (0 == strcmp(key, "announce") && value->type == BENCODE_BYTE_STRING) {
+            if (0 == strcmp(key, "announce") &&
+                value->type == BENCODE_BYTE_STRING) {
                 printf("Tracker URL: %s\n", value->byte_string.buffer);
-                break;
             }
-        }
-        for (int i = 0; i < dict->length; i++) {
-            char *key = dict->kvpairs[i].key->buffer;
-            Bencode *value = dict->kvpairs[i].value;
-            if (0 == strcmp(key, "info") && value->type == BENCODE_DICTIONARY) {
+            else if (0 == strcmp(key, "info") &&
+                     value->type == BENCODE_DICTIONARY) {
                 struct bencode_dictionary child = value->dictionary;
                 for (int j = 0; j < child.length; j++) {
                     char *key = child.kvpairs[j].key->buffer;
                     Bencode *value = child.kvpairs[j].value;
-                    if (0 == strcmp(key, "length") && value->type == BENCODE_INTEGER) {
+                    if (0 == strcmp(key, "length") &&
+                        value->type == BENCODE_INTEGER) {
                         printf("Length: %lld\n", value->integer.value);
-                        break;
                     }
                 }
-                break;
+
+                struct string_builder sb = string_builder_init(1024 * 64);
+                bencode_encode(&sb, (Bencode *)&child);
+                string_builder_end(&sb);
+
+                OpenSSL_add_all_digests();
+                const EVP_MD *md = EVP_get_digestbyname("SHA1");
+                assert(md && "Failed to get SHA1 digest");
+
+                unsigned char md_val[EVP_MAX_MD_SIZE];
+                uint32_t md_len = 0;
+                EVP_MD_CTX *md_ctx = EVP_MD_CTX_create();
+                EVP_DigestInit_ex(md_ctx, md, NULL);
+                EVP_DigestUpdate(md_ctx, sb.buffer, sb.length);
+                EVP_DigestFinal_ex(md_ctx, md_val, &md_len);
+                EVP_MD_CTX_destroy(md_ctx);
+
+                char *hash = arena_push(&arena, sizeof(*hash), md_len * 2);
+                for (int i = 0; i < md_len; i++) {
+                    sprintf(&hash[i * 2], "%02x", md_val[i]);
+                }
+
+                printf("Info Hash: %s\n", hash);
             }
         }
     }
