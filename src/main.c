@@ -407,6 +407,15 @@ main(int argc, char *argv[])
         printf("%s\n", string);
     }
     else if (0 == strcmp(command, "info")) {
+        char *announce = NULL;
+        char *name = NULL;
+        size_t length = 0;
+        char *info_hash = NULL;
+        size_t piece_length = 0;
+        uint8_t **pieces = NULL;
+        char **piece_hashes = NULL;
+        size_t npieces = 0;
+
         char filename[4096];
         size_t len = snprintf(filename, sizeof(filename), "../%s", argv[2]);
         filename[len] = '\0';
@@ -426,22 +435,16 @@ main(int argc, char *argv[])
             Bencode *value = dict->kvpairs[i].value;
             if (0 == strcmp(key, "announce") &&
                 value->type == BENCODE_BYTE_STRING) {
-                printf("Tracker URL: %s\n", value->byte_string.buffer);
+                announce = arena_push(&arena, sizeof(*announce), value->byte_string.length);
+                memcpy(announce, value->byte_string.buffer, value->byte_string.length+1);
+                announce[value->byte_string.length] = '\0';
             }
             else if (0 == strcmp(key, "info") &&
                      value->type == BENCODE_DICTIONARY) {
-                struct bencode_dictionary child = value->dictionary;
-                for (int j = 0; j < child.length; j++) {
-                    char *key = child.kvpairs[j].key->buffer;
-                    Bencode *value = child.kvpairs[j].value;
-                    if (0 == strcmp(key, "length") &&
-                        value->type == BENCODE_INTEGER) {
-                        printf("Length: %lld\n", value->integer.value);
-                    }
-                }
 
+                struct bencode_dictionary info = value->dictionary;
                 struct string_builder sb = string_builder_init(1024 * 64);
-                bencode_encode(&sb, (Bencode *)&child);
+                bencode_encode(&sb, (Bencode *)&info);
                 string_builder_end(&sb);
 
                 OpenSSL_add_all_digests();
@@ -456,12 +459,56 @@ main(int argc, char *argv[])
                 EVP_DigestFinal_ex(md_ctx, md_val, &md_len);
                 EVP_MD_CTX_destroy(md_ctx);
 
-                char *hash = arena_push(&arena, sizeof(*hash), md_len * 2);
+                info_hash = arena_push(&arena, sizeof(*info_hash), md_len * 2);
                 for (int i = 0; i < md_len; i++) {
-                    sprintf(&hash[i * 2], "%02x", md_val[i]);
+                    sprintf(&info_hash[i * 2], "%02x", md_val[i]);
                 }
 
-                printf("Info Hash: %s\n", hash);
+                for (int j = 0; j < info.length; j++) {
+                    char *key = info.kvpairs[j].key->buffer;
+                    Bencode *value = info.kvpairs[j].value;
+                    if (0 == strcmp(key, "length") &&
+                        value->type == BENCODE_INTEGER) {
+                        length = value->integer.value;
+                    }
+                    else if (0 == strcmp(key, "piece length") &&
+                        value->type == BENCODE_INTEGER) {
+                        piece_length = value->integer.value;
+                    }
+                    else if (0 == strcmp(key, "name") && value->type == BENCODE_BYTE_STRING) {
+                        name = arena_push(&arena, sizeof(*name), value->byte_string.length);
+                        memcpy(name, value->byte_string.buffer, value->byte_string.length+1);
+                        name[value->byte_string.length] = '\0';
+                    }
+                    else if (0 == strcmp(key, "pieces") && value->type == BENCODE_BYTE_STRING) {
+                        npieces = value->byte_string.length / 20;
+                        pieces = arena_push(&arena, sizeof(*pieces), value->byte_string.length);
+                        for (int i = 0; i < npieces; i++) {
+                            pieces[i] = arena_push(&arena, sizeof(**pieces), 21);
+                            memcpy(pieces[i], value->byte_string.buffer + i * 20, 20);
+                            pieces[i][20] = '\0';
+                        }
+                    }
+                }
+
+                piece_hashes = arena_push(&arena, sizeof(*piece_hashes), npieces);
+                for (int i = 0; i < npieces; i++) {
+                    piece_hashes[i] = arena_push(&arena, sizeof(**piece_hashes), 41);
+                    char *piece = pieces[i];
+                    for (int j = 0; j < 20; j++) {
+                        sprintf(&piece_hashes[i][j * 2], "%02x", piece[j] & 0xFF);
+                    }
+                    piece_hashes[i][40] = '\0';
+                }
+
+                printf("Tracker URL: %s\n", announce);
+                printf("Length: %zu\n", length);
+                printf("Info Hash: %s\n", info_hash);
+                printf("Piece Length: %zu\n", piece_length);
+                printf("Piece Hashes:\n");
+                for (int i = 0; i < npieces; i++) {
+                    printf("%s\n", piece_hashes[i]);
+                }
             }
         }
     }
