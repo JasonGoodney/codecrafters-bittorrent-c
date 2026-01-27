@@ -506,7 +506,7 @@ main(int argc, char *argv[])
                 for (int i = 0; i < npieces; i++) {
                     piece_hashes[i] =
                         arena_push(&arena, sizeof(**piece_hashes), 41);
-                    char *piece = pieces[i];
+                    uint8_t *piece = pieces[i];
                     for (int j = 0; j < 20; j++) {
                         sprintf(
                             &piece_hashes[i][j * 2], "%02x", piece[j] & 0xFF);
