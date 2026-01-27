@@ -408,7 +408,7 @@ main(int argc, char *argv[])
         string_builder_destroy(&sb);
     }
     else if (0 == strcmp(command, "info")) {
-        char *announce = NULL;
+        char *tracker_url = NULL;
         char *name = NULL;
         size_t length = 0;
         char *info_hash = NULL;
@@ -436,16 +436,15 @@ main(int argc, char *argv[])
             Bencode *value = dict->kvpairs[i].value;
             if (0 == strcmp(key, "announce") &&
                 value->type == BENCODE_BYTE_STRING) {
-                announce = arena_push(
-                    &arena, sizeof(*announce), value->byte_string.length);
-                memcpy(announce,
+                tracker_url = arena_push(
+                    &arena, sizeof(*tracker_url), value->byte_string.length);
+                memcpy(tracker_url,
                        value->byte_string.buffer,
                        value->byte_string.length + 1);
-                announce[value->byte_string.length] = '\0';
+                tracker_url[value->byte_string.length] = '\0';
             }
             else if (0 == strcmp(key, "info") &&
-                     value->type == BENCODE_DICTIONARY)
-            {
+                     value->type == BENCODE_DICTIONARY) {
 
                 struct bencode_dictionary info = value->dictionary;
                 struct string_builder sb = string_builder_init(1024 * 64);
@@ -518,7 +517,7 @@ main(int argc, char *argv[])
                     piece_hashes[i][40] = '\0';
                 }
 
-                printf("Tracker URL: %s\n", announce);
+                printf("Tracker URL: %s\n", tracker_url);
                 printf("Length: %zu\n", length);
                 printf("Info Hash: %s\n", info_hash);
                 printf("Piece Length: %zu\n", piece_length);
