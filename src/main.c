@@ -12,61 +12,6 @@ is_digit(char c)
     return c >= '0' && c <= '9';
 }
 
-enum bencode_type {
-    BENCODE_BYTE_STRING,
-    BENCODE_INTEGER,
-    BENCODE_LIST,
-    BENCODE_DICTIONARY
-};
-
-typedef union bencode Bencode;
-
-struct bencode_integer {
-    enum bencode_type type;
-    uint32_t padding1;
-    int64_t value;
-    uint64_t padding2;
-    uint64_t padding3;
-};
-
-struct bencode_byte_string {
-    enum bencode_type type;
-    uint32_t padding1;
-    char *buffer;
-    size_t length;
-    uint64_t padding2;
-};
-
-struct bencode_list {
-    enum bencode_type type;
-    uint32_t padding1;
-    Bencode *items;
-    size_t length;
-    uint64_t padding2;
-};
-
-struct bencode_kvpair {
-    struct bencode_byte_string *key;
-    Bencode *value;
-    uint64_t padding;
-};
-
-struct bencode_dictionary {
-    enum bencode_type type;
-    uint32_t padding1;
-    struct bencode_kvpair *kvpairs;
-    size_t length;
-    uint64_t padding2;
-};
-
-union bencode {
-    enum bencode_type type;
-    struct bencode_byte_string byte_string;
-    struct bencode_integer integer;
-    struct bencode_list list;
-    struct bencode_dictionary dictionary;
-};
-
 struct arena {
     void *base;
     uint32_t capacity;
@@ -104,23 +49,78 @@ arena_destroy(struct arena *arena)
     free(arena->base);
 }
 
-char *
-decode_bencode(struct arena *arena, Bencode *bencode, char *bencoded_value);
+enum btype {
+    BENCODE_BYTE_STRING,
+    BENCODE_INTEGER,
+    BENCODE_LIST,
+    BENCODE_DICTIONARY
+};
+
+typedef union belement belement_t;
+
+struct bint {
+    enum btype type;
+    uint32_t padding1;
+    int64_t value;
+    uint64_t padding2;
+    uint64_t padding3;
+};
+
+struct bstr {
+    enum btype type;
+    uint32_t padding1;
+    char *buffer;
+    size_t length;
+    uint64_t padding2;
+};
+
+struct blist {
+    enum btype type;
+    uint32_t padding1;
+    belement_t *items;
+    size_t length;
+    uint64_t padding2;
+};
+
+struct kvpair {
+    struct bstr *key;
+    belement_t *element;
+    uint64_t padding;
+};
+
+struct bdict {
+    enum btype type;
+    uint32_t padding1;
+    struct kvpair *kvpairs;
+    size_t length;
+    uint64_t padding2;
+};
+
+union belement {
+    enum btype type;
+    struct bstr byte_string;
+    struct bint integer;
+    struct blist list;
+    struct bdict dictionary;
+};
 
 char *
-decode_byte_string(struct arena *arena,
-                   struct bencode_byte_string *bencode,
-                   char *bencoded_value)
+bdecode(struct arena *, belement_t *, char *);
+
+char *
+bdecode_byte_string(struct arena *arena,
+                    struct bstr *bstr,
+                    char *bencoded_value)
 {
     int length = atoi(bencoded_value);
     size_t lengthlength = snprintf(NULL, 0, "%d", length);
     const char *colon_index = strchr(bencoded_value, ':');
     if (colon_index != NULL) {
         const char *start = colon_index + 1;
-        bencode->buffer = malloc(length + 1); // TODO: free string value
-        memcpy(bencode->buffer, start, length);
-        bencode->buffer[length] = '\0';
-        bencode->length = length;
+        bstr->buffer = malloc(length + 1); // TODO: free string value
+        memcpy(bstr->buffer, start, length);
+        bstr->buffer[length] = '\0';
+        bstr->length = length;
     }
     else {
         fprintf(stderr, "Invalid encoded value: %s\n", bencoded_value);
@@ -131,86 +131,84 @@ decode_byte_string(struct arena *arena,
 }
 
 char *
-decode_integer(struct arena *arena,
-               struct bencode_integer *bencode,
-               char *bencoded_value)
+bdecode_integer(struct arena *arena, struct bint *bint, char *bencoded_value)
 {
     char *token = strtok(bencoded_value + 1, "e");
     int64_t result = strtoll(token, NULL, 10);
-    bencode->value = result;
+    bint->value = result;
 
     char *next = bencoded_value + strlen(token) + 2;
     return next;
 }
 
 char *
-decode_list(struct arena *arena,
-            struct bencode_list *list,
-            char *bencoded_value)
+bdecode_list(struct arena *arena, struct blist *blist, char *bencoded_value)
 {
-    list->length = 0;
-    list->items = (Bencode *)arena_push(
-        arena, sizeof(Bencode *), 8); // TODO: fix hardcoded size
+    blist->length = 0;
+    blist->items = (belement_t *)arena_push(
+        arena, sizeof(belement_t *), 8); // TODO: fix hardcoded size
     bencoded_value++;
     while (*bencoded_value != '\0' && *bencoded_value != 'e') {
 
         bencoded_value =
-            decode_bencode(arena, &list->items[list->length], bencoded_value);
-        list->length++;
+            bdecode(arena, &blist->items[blist->length], bencoded_value);
+        blist->length++;
     }
 
     return bencoded_value + 1;
 }
 
 char *
-decode_dictionary(struct arena *arena,
-                  struct bencode_dictionary *dict,
-                  char *bencoded_value)
+bdecode_dictionary(struct arena *arena,
+                   struct bdict *bdict,
+                   char *bencoded_value)
 {
-    dict->length = 0;
-    dict->kvpairs = (struct bencode_kvpair *)arena_push(
-        arena, sizeof(*dict->kvpairs), 8); // TODO: fix hardcoded size
+    bdict->length = 0;
+    bdict->kvpairs = (struct kvpair *)arena_push(
+        arena, sizeof(*bdict->kvpairs), 8); // TODO: fix hardcoded size
 
     bencoded_value++;
     while (*bencoded_value != '\0' && *bencoded_value != 'e') {
-        dict->kvpairs[dict->length].key =
-            arena_push(arena, sizeof(struct bencode_byte_string), 1);
-        bencoded_value = decode_bencode(
-            arena, (Bencode *)dict->kvpairs[dict->length].key, bencoded_value);
+        bdict->kvpairs[bdict->length].key =
+            arena_push(arena, sizeof(struct bstr), 1);
+        bencoded_value =
+            bdecode(arena,
+                    (belement_t *)bdict->kvpairs[bdict->length].key,
+                    bencoded_value);
 
-        dict->kvpairs[dict->length].value =
-            arena_push(arena, sizeof(Bencode), 1);
-        bencoded_value = decode_bencode(
-            arena, dict->kvpairs[dict->length].value, bencoded_value);
+        bdict->kvpairs[bdict->length].element =
+            arena_push(arena, sizeof(belement_t), 1);
+        bencoded_value = bdecode(
+            arena, bdict->kvpairs[bdict->length].element, bencoded_value);
 
-        dict->length++;
+        bdict->length++;
     }
 
     return bencoded_value + 1;
 }
 
 char *
-decode_bencode(struct arena *arena, Bencode *bencode, char *bencoded_value)
+bdecode(struct arena *arena, belement_t *bencode, char *bencoded_value)
 {
     if (is_digit(bencoded_value[0])) {
         bencode->type = BENCODE_BYTE_STRING;
-        bencoded_value = decode_byte_string(
-            arena, (struct bencode_byte_string *)bencode, bencoded_value);
+        bencoded_value =
+            bdecode_byte_string(arena, (struct bstr *)bencode, bencoded_value);
     }
     else if ('i' == bencoded_value[0]) {
         bencode->type = BENCODE_INTEGER;
-        bencoded_value = decode_integer(
-            arena, (struct bencode_integer *)bencode, bencoded_value);
+        bencoded_value =
+            bdecode_integer(arena, (struct bint *)bencode, bencoded_value);
     }
     else if ('l' == bencoded_value[0]) {
         bencode->type = BENCODE_LIST;
         bencoded_value =
-            decode_list(arena, (struct bencode_list *)bencode, bencoded_value);
+            bdecode_list(arena, (struct blist *)bencode, bencoded_value);
     }
     else if ('d' == bencoded_value[0]) {
         bencode->type = BENCODE_DICTIONARY;
-        bencoded_value = decode_dictionary(
-            arena, (struct bencode_dictionary *)bencode, bencoded_value);
+        bencoded_value =
+            bdecode_dictionary(arena, (struct bdict *)bencode, bencoded_value);
     }
     else {
         fprintf(stderr, "Only strings are supported at the moment\n");
@@ -276,7 +274,7 @@ string_builder_destroy(struct string_builder *sb)
 }
 
 char *
-bencode_stringify(struct string_builder *sb, Bencode *bencode)
+bencode_stringify(struct string_builder *sb, belement_t *bencode)
 {
 
     if (bencode->type == BENCODE_BYTE_STRING) {
@@ -294,7 +292,7 @@ bencode_stringify(struct string_builder *sb, Bencode *bencode)
         for (int i = 0; i < bencode->list.length; i++) {
             string_builder_append_string(sb, delim, strlen(delim));
             delim = ",";
-            Bencode *item = &bencode->list.items[i];
+            belement_t *item = &bencode->list.items[i];
             bencode_stringify(sb, item);
         }
         string_builder_append_string(sb, "]", 1);
@@ -306,10 +304,10 @@ bencode_stringify(struct string_builder *sb, Bencode *bencode)
             string_builder_append_string(sb, delim, strlen(delim));
             delim = ",";
 
-            struct bencode_kvpair *kvpair = &bencode->dictionary.kvpairs[i];
-            bencode_stringify(sb, (Bencode *)kvpair->key);
+            struct kvpair *kvpair = &bencode->dictionary.kvpairs[i];
+            bencode_stringify(sb, (belement_t *)kvpair->key);
             string_builder_append_string(sb, ":", 1);
-            bencode_stringify(sb, kvpair->value);
+            bencode_stringify(sb, kvpair->element);
         }
         string_builder_append_string(sb, "}", 1);
     }
@@ -318,10 +316,10 @@ bencode_stringify(struct string_builder *sb, Bencode *bencode)
 }
 
 void
-bencode_encode(struct string_builder *sb, Bencode *bencode);
+bencode(struct string_builder *sb, belement_t *bencode);
 
 void
-bencode_encode_string(struct string_builder *sb, struct bencode_byte_string *s)
+bencode_string(struct string_builder *sb, struct bstr *s)
 {
     string_builder_append_int64(sb, s->length);
     string_builder_append_char(sb, ':');
@@ -329,7 +327,7 @@ bencode_encode_string(struct string_builder *sb, struct bencode_byte_string *s)
 }
 
 void
-bencode_encode_integer(struct string_builder *sb, struct bencode_integer *i)
+bencode_integer(struct string_builder *sb, struct bint *i)
 {
     string_builder_append_char(sb, 'i');
     string_builder_append_int64(sb, i->value);
@@ -337,43 +335,42 @@ bencode_encode_integer(struct string_builder *sb, struct bencode_integer *i)
 }
 
 void
-bencode_encode_list(struct string_builder *sb, struct bencode_list *list)
+bencode_list(struct string_builder *sb, struct blist *list)
 {
     string_builder_append_char(sb, 'l');
     for (int i = 0; i < list->length; i++) {
-        bencode_encode(sb, (Bencode *)&list->items[i]);
+        bencode(sb, (belement_t *)&list->items[i]);
     }
     string_builder_append_char(sb, 'e');
 }
 
 void
-bencode_encode_dictionary(struct string_builder *sb,
-                          struct bencode_dictionary *dict)
+bencode_dictionary(struct string_builder *sb, struct bdict *dict)
 {
     string_builder_append_char(sb, 'd');
     for (int i = 0; i < dict->length; i++) {
-        struct bencode_byte_string *key = dict->kvpairs[i].key;
-        Bencode *value = dict->kvpairs[i].value;
-        bencode_encode_string(sb, key);
-        bencode_encode(sb, value);
+        struct bstr *key = dict->kvpairs[i].key;
+        belement_t *value = dict->kvpairs[i].element;
+        bencode_string(sb, key);
+        bencode(sb, value);
     }
     string_builder_append_char(sb, 'e');
 }
 
 void
-bencode_encode(struct string_builder *sb, Bencode *bencode)
+bencode(struct string_builder *sb, belement_t *bencode)
 {
     if (bencode->type == BENCODE_BYTE_STRING) {
-        bencode_encode_string(sb, (struct bencode_byte_string *)bencode);
+        bencode_string(sb, (struct bstr *)bencode);
     }
     else if (bencode->type == BENCODE_INTEGER) {
-        bencode_encode_integer(sb, (struct bencode_integer *)bencode);
+        bencode_integer(sb, (struct bint *)bencode);
     }
     else if (bencode->type == BENCODE_LIST) {
-        bencode_encode_list(sb, (struct bencode_list *)bencode);
+        bencode_list(sb, (struct blist *)bencode);
     }
     else if (bencode->type == BENCODE_DICTIONARY) {
-        bencode_encode_dictionary(sb, (struct bencode_dictionary *)bencode);
+        bencode_dictionary(sb, (struct bdict *)bencode);
     }
 }
 
@@ -400,8 +397,8 @@ main(int argc, char *argv[])
         fprintf(stderr, "Logs from your program will appear here!\n");
 
         char *encoded_str = argv[2];
-        Bencode *bencode = arena_push(&arena, sizeof(*bencode), 1);
-        decode_bencode(&arena, bencode, encoded_str);
+        belement_t *bencode = arena_push(&arena, sizeof(*bencode), 1);
+        bdecode(&arena, bencode, encoded_str);
         struct string_builder sb = string_builder_init(1024 * 1024);
         char *string = bencode_stringify(&sb, bencode);
         printf("%s\n", string);
@@ -428,12 +425,12 @@ main(int argc, char *argv[])
         int closed = fclose(fh);
         assert(closed >= 0);
 
-        Bencode *bencode = arena_push(&arena, sizeof(*bencode), 1);
-        decode_bencode(&arena, bencode, buffer);
-        struct bencode_dictionary *dict = &bencode->dictionary;
+        belement_t *elem = arena_push(&arena, sizeof(*elem), 1);
+        bdecode(&arena, elem, buffer);
+        struct bdict *dict = &elem->dictionary;
         for (int i = 0; i < dict->length; i++) {
             char *key = dict->kvpairs[i].key->buffer;
-            Bencode *value = dict->kvpairs[i].value;
+            belement_t *value = dict->kvpairs[i].element;
             if (0 == strcmp(key, "announce") &&
                 value->type == BENCODE_BYTE_STRING) {
                 tracker_url = arena_push(
@@ -446,10 +443,10 @@ main(int argc, char *argv[])
             else if (0 == strcmp(key, "info") &&
                      value->type == BENCODE_DICTIONARY) {
 
-                struct bencode_dictionary info = value->dictionary;
+                struct bdict info = value->dictionary;
                 struct string_builder sb = string_builder_init(1024 * 64);
 
-                bencode_encode(&sb, (Bencode *)&info);
+                bencode(&sb, (belement_t *)&info);
 
                 OpenSSL_add_all_digests();
                 const EVP_MD *md = EVP_get_digestbyname("SHA1");
@@ -470,7 +467,7 @@ main(int argc, char *argv[])
 
                 for (int j = 0; j < info.length; j++) {
                     char *key = info.kvpairs[j].key->buffer;
-                    Bencode *value = info.kvpairs[j].value;
+                    belement_t *value = info.kvpairs[j].element;
                     if (0 == strcmp(key, "length") &&
                         value->type == BENCODE_INTEGER) {
                         length = value->integer.value;
