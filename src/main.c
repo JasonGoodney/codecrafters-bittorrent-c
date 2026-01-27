@@ -241,37 +241,38 @@ string_builder_string(struct string_builder *sb)
     return sb->buffer;
 }
 
-void
+char *
 string_builder_append_string(struct string_builder *sb,
                              char *string,
                              size_t length)
 {
     memcpy(sb->buffer + sb->length, string, length);
     sb->length += length;
+    sb->buffer[sb->length] = '\0';
+    return sb->buffer;
 }
 
-void
+char *
 string_builder_append_char(struct string_builder *sb, char c)
 {
     char str[1] = {c};
-    string_builder_append_string(sb, str, 1);
+    return string_builder_append_string(sb, str, 1);
 }
 
-void
+char *
 string_builder_append_int64(struct string_builder *sb, int64_t value)
 {
     char tmp[1024];
 
     size_t length = snprintf(tmp, sizeof(tmp), "%lld", value);
     tmp[length] = '\0';
-    string_builder_append_string(sb, tmp, length);
+    return string_builder_append_string(sb, tmp, length);
 }
 
-char *
-string_builder_end(struct string_builder *sb)
+void
+string_builder_destroy(struct string_builder *sb)
 {
-    sb->buffer[sb->length] = '\0';
-    return sb->buffer;
+    free(sb->buffer);
 }
 
 char *
@@ -403,8 +404,8 @@ main(int argc, char *argv[])
         decode_bencode(&arena, bencode, encoded_str);
         struct string_builder sb = string_builder_init(1024 * 1024);
         char *string = bencode_stringify(&sb, bencode);
-        string_builder_end(&sb);
         printf("%s\n", string);
+        string_builder_destroy(&sb);
     }
     else if (0 == strcmp(command, "info")) {
         char *announce = NULL;
@@ -435,17 +436,21 @@ main(int argc, char *argv[])
             Bencode *value = dict->kvpairs[i].value;
             if (0 == strcmp(key, "announce") &&
                 value->type == BENCODE_BYTE_STRING) {
-                announce = arena_push(&arena, sizeof(*announce), value->byte_string.length);
-                memcpy(announce, value->byte_string.buffer, value->byte_string.length+1);
+                announce = arena_push(
+                    &arena, sizeof(*announce), value->byte_string.length);
+                memcpy(announce,
+                       value->byte_string.buffer,
+                       value->byte_string.length + 1);
                 announce[value->byte_string.length] = '\0';
             }
             else if (0 == strcmp(key, "info") &&
-                     value->type == BENCODE_DICTIONARY) {
+                     value->type == BENCODE_DICTIONARY)
+            {
 
                 struct bencode_dictionary info = value->dictionary;
                 struct string_builder sb = string_builder_init(1024 * 64);
+
                 bencode_encode(&sb, (Bencode *)&info);
-                string_builder_end(&sb);
 
                 OpenSSL_add_all_digests();
                 const EVP_MD *md = EVP_get_digestbyname("SHA1");
@@ -472,31 +477,43 @@ main(int argc, char *argv[])
                         length = value->integer.value;
                     }
                     else if (0 == strcmp(key, "piece length") &&
-                        value->type == BENCODE_INTEGER) {
+                             value->type == BENCODE_INTEGER) {
                         piece_length = value->integer.value;
                     }
-                    else if (0 == strcmp(key, "name") && value->type == BENCODE_BYTE_STRING) {
-                        name = arena_push(&arena, sizeof(*name), value->byte_string.length);
-                        memcpy(name, value->byte_string.buffer, value->byte_string.length+1);
+                    else if (0 == strcmp(key, "name") &&
+                             value->type == BENCODE_BYTE_STRING) {
+                        name = arena_push(
+                            &arena, sizeof(*name), value->byte_string.length);
+                        memcpy(name,
+                               value->byte_string.buffer,
+                               value->byte_string.length + 1);
                         name[value->byte_string.length] = '\0';
                     }
-                    else if (0 == strcmp(key, "pieces") && value->type == BENCODE_BYTE_STRING) {
+                    else if (0 == strcmp(key, "pieces") &&
+                             value->type == BENCODE_BYTE_STRING) {
                         npieces = value->byte_string.length / 20;
-                        pieces = arena_push(&arena, sizeof(*pieces), value->byte_string.length);
+                        pieces = arena_push(
+                            &arena, sizeof(*pieces), value->byte_string.length);
                         for (int i = 0; i < npieces; i++) {
-                            pieces[i] = arena_push(&arena, sizeof(**pieces), 21);
-                            memcpy(pieces[i], value->byte_string.buffer + i * 20, 20);
+                            pieces[i] =
+                                arena_push(&arena, sizeof(**pieces), 21);
+                            memcpy(pieces[i],
+                                   value->byte_string.buffer + i * 20,
+                                   20);
                             pieces[i][20] = '\0';
                         }
                     }
                 }
 
-                piece_hashes = arena_push(&arena, sizeof(*piece_hashes), npieces);
+                piece_hashes =
+                    arena_push(&arena, sizeof(*piece_hashes), npieces);
                 for (int i = 0; i < npieces; i++) {
-                    piece_hashes[i] = arena_push(&arena, sizeof(**piece_hashes), 41);
+                    piece_hashes[i] =
+                        arena_push(&arena, sizeof(**piece_hashes), 41);
                     char *piece = pieces[i];
                     for (int j = 0; j < 20; j++) {
-                        sprintf(&piece_hashes[i][j * 2], "%02x", piece[j] & 0xFF);
+                        sprintf(
+                            &piece_hashes[i][j * 2], "%02x", piece[j] & 0xFF);
                     }
                     piece_hashes[i][40] = '\0';
                 }
@@ -509,6 +526,8 @@ main(int argc, char *argv[])
                 for (int i = 0; i < npieces; i++) {
                     printf("%s\n", piece_hashes[i]);
                 }
+
+                string_builder_destroy(&sb);
             }
         }
     }
