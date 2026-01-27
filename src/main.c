@@ -218,31 +218,29 @@ bdecode(struct arena *arena, belement_t *bencode, char *bencoded_value)
     return bencoded_value;
 }
 
-struct string_builder {
+struct strbuf {
     char *buffer;
     size_t capacity;
     size_t length;
 };
 
-struct string_builder
-string_builder_init(size_t capacity)
+struct strbuf
+strbuf_init(size_t capacity)
 {
-    struct string_builder sb = {0};
+    struct strbuf sb = {0};
     sb.capacity = capacity;
     sb.buffer = malloc(capacity);
     return sb;
 }
 
 char *
-string_builder_string(struct string_builder *sb)
+strbuf_string(struct strbuf *sb)
 {
     return sb->buffer;
 }
 
 char *
-string_builder_append_string(struct string_builder *sb,
-                             char *string,
-                             size_t length)
+strbuf_append_string(struct strbuf *sb, char *string, size_t length)
 {
     memcpy(sb->buffer + sb->length, string, length);
     sb->length += length;
@@ -251,114 +249,114 @@ string_builder_append_string(struct string_builder *sb,
 }
 
 char *
-string_builder_append_char(struct string_builder *sb, char c)
+strbuf_append_char(struct strbuf *sb, char c)
 {
     char str[1] = {c};
-    return string_builder_append_string(sb, str, 1);
+    return strbuf_append_string(sb, str, 1);
 }
 
 char *
-string_builder_append_int64(struct string_builder *sb, int64_t value)
+strbuf_append_int64(struct strbuf *sb, int64_t value)
 {
     char tmp[1024];
 
     size_t length = snprintf(tmp, sizeof(tmp), "%lld", value);
     tmp[length] = '\0';
-    return string_builder_append_string(sb, tmp, length);
+    return strbuf_append_string(sb, tmp, length);
 }
 
 void
-string_builder_destroy(struct string_builder *sb)
+strbuf_destroy(struct strbuf *sb)
 {
     free(sb->buffer);
 }
 
 char *
-bencode_stringify(struct string_builder *sb, belement_t *bencode)
+bencode_stringify(struct strbuf *sb, belement_t *bencode)
 {
 
     if (bencode->type == BENCODE_BYTE_STRING) {
-        string_builder_append_string(sb, "\"", 1);
-        string_builder_append_string(
+        strbuf_append_string(sb, "\"", 1);
+        strbuf_append_string(
             sb, bencode->byte_string.buffer, bencode->byte_string.length);
-        string_builder_append_string(sb, "\"", 1);
+        strbuf_append_string(sb, "\"", 1);
     }
     else if (bencode->type == BENCODE_INTEGER) {
-        string_builder_append_int64(sb, bencode->integer.value);
+        strbuf_append_int64(sb, bencode->integer.value);
     }
     else if (bencode->type == BENCODE_LIST) {
         char *delim = "";
-        string_builder_append_string(sb, "[", 1);
+        strbuf_append_string(sb, "[", 1);
         for (int i = 0; i < bencode->list.length; i++) {
-            string_builder_append_string(sb, delim, strlen(delim));
+            strbuf_append_string(sb, delim, strlen(delim));
             delim = ",";
             belement_t *item = &bencode->list.items[i];
             bencode_stringify(sb, item);
         }
-        string_builder_append_string(sb, "]", 1);
+        strbuf_append_string(sb, "]", 1);
     }
     else if (bencode->type == BENCODE_DICTIONARY) {
         char *delim = "";
-        string_builder_append_string(sb, "{", 1);
+        strbuf_append_string(sb, "{", 1);
         for (int i = 0; i < bencode->dictionary.length; i++) {
-            string_builder_append_string(sb, delim, strlen(delim));
+            strbuf_append_string(sb, delim, strlen(delim));
             delim = ",";
 
             struct kvpair *kvpair = &bencode->dictionary.kvpairs[i];
             bencode_stringify(sb, (belement_t *)kvpair->key);
-            string_builder_append_string(sb, ":", 1);
+            strbuf_append_string(sb, ":", 1);
             bencode_stringify(sb, kvpair->element);
         }
-        string_builder_append_string(sb, "}", 1);
+        strbuf_append_string(sb, "}", 1);
     }
 
-    return string_builder_string(sb);
+    return strbuf_string(sb);
 }
 
 void
-bencode(struct string_builder *sb, belement_t *bencode);
+bencode(struct strbuf *sb, belement_t *bencode);
 
 void
-bencode_string(struct string_builder *sb, struct bstr *s)
+bencode_string(struct strbuf *sb, struct bstr *s)
 {
-    string_builder_append_int64(sb, s->length);
-    string_builder_append_char(sb, ':');
-    string_builder_append_string(sb, s->buffer, s->length);
+    strbuf_append_int64(sb, s->length);
+    strbuf_append_char(sb, ':');
+    strbuf_append_string(sb, s->buffer, s->length);
 }
 
 void
-bencode_integer(struct string_builder *sb, struct bint *i)
+bencode_integer(struct strbuf *sb, struct bint *i)
 {
-    string_builder_append_char(sb, 'i');
-    string_builder_append_int64(sb, i->value);
-    string_builder_append_char(sb, 'e');
+    strbuf_append_char(sb, 'i');
+    strbuf_append_int64(sb, i->value);
+    strbuf_append_char(sb, 'e');
 }
 
 void
-bencode_list(struct string_builder *sb, struct blist *list)
+bencode_list(struct strbuf *sb, struct blist *list)
 {
-    string_builder_append_char(sb, 'l');
+    strbuf_append_char(sb, 'l');
     for (int i = 0; i < list->length; i++) {
         bencode(sb, (belement_t *)&list->items[i]);
     }
-    string_builder_append_char(sb, 'e');
+    strbuf_append_char(sb, 'e');
 }
 
 void
-bencode_dictionary(struct string_builder *sb, struct bdict *dict)
+bencode_dictionary(struct strbuf *sb, struct bdict *dict)
 {
-    string_builder_append_char(sb, 'd');
+    strbuf_append_char(sb, 'd');
     for (int i = 0; i < dict->length; i++) {
         struct bstr *key = dict->kvpairs[i].key;
         belement_t *value = dict->kvpairs[i].element;
         bencode_string(sb, key);
         bencode(sb, value);
     }
-    string_builder_append_char(sb, 'e');
+    strbuf_append_char(sb, 'e');
 }
 
 void
-bencode(struct string_builder *sb, belement_t *bencode)
+bencode(struct strbuf *sb, belement_t *bencode)
 {
     if (bencode->type == BENCODE_BYTE_STRING) {
         bencode_string(sb, (struct bstr *)bencode);
@@ -399,10 +397,12 @@ main(int argc, char *argv[])
         char *encoded_str = argv[2];
         belement_t *bencode = arena_push(&arena, sizeof(*bencode), 1);
         bdecode(&arena, bencode, encoded_str);
-        struct string_builder sb = string_builder_init(1024 * 1024);
+        struct strbuf sb = strbuf_init(1024 * 1024);
         char *string = bencode_stringify(&sb, bencode);
         printf("%s\n", string);
-        string_builder_destroy(&sb);
+        strbuf_destroy(&sb);
+    }
+    else if (0 == strcmp(command, "peers")) {
     }
     else if (0 == strcmp(command, "info")) {
         char *tracker_url = NULL;
@@ -444,7 +444,7 @@ main(int argc, char *argv[])
                      value->type == BENCODE_DICTIONARY) {
 
                 struct bdict info = value->dictionary;
-                struct string_builder sb = string_builder_init(1024 * 64);
+                struct strbuf sb = strbuf_init(1024 * 64);
 
                 bencode(&sb, (belement_t *)&info);
 
@@ -523,7 +523,7 @@ main(int argc, char *argv[])
                     printf("%s\n", piece_hashes[i]);
                 }
 
-                string_builder_destroy(&sb);
+                strbuf_destroy(&sb);
             }
         }
     }
