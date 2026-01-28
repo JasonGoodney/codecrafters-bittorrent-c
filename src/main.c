@@ -1,52 +1,22 @@
 #include <assert.h>
+#include <ctype.h>
+#include <netdb.h>
+#include <netinet/in.h>
 #include <openssl/evp.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include "arena.h"
 
 bool
 is_digit(char c)
 {
     return c >= '0' && c <= '9';
-}
-
-struct arena {
-    void *base;
-    uint32_t capacity;
-    uint32_t used;
-};
-
-void *
-arena_push(struct arena *arena, size_t size, size_t nitems)
-{
-    assert((size * nitems) + arena->used <= arena->capacity);
-
-    void *ptr = (uint8_t *)arena->base + arena->used;
-    arena->used += (size * nitems);
-    return ptr;
-}
-
-void
-arena_clear(struct arena *arena)
-{
-    arena->used = 0;
-}
-
-struct arena
-arena_init(uint32_t capacity)
-{
-    struct arena arena = {0};
-    arena.capacity = capacity;
-    arena.base = malloc(capacity);
-    return arena;
-}
-
-void
-arena_destroy(struct arena *arena)
-{
-    free(arena->base);
 }
 
 enum btype {
@@ -113,7 +83,7 @@ bdecode_byte_string(struct arena *arena,
                     char *bencoded_value)
 {
     int length = atoi(bencoded_value);
-    size_t lengthlength = snprintf(NULL, 0, "%d", length);
+    size_t length_char_count = snprintf(NULL, 0, "%d", length);
     const char *colon_index = strchr(bencoded_value, ':');
     if (colon_index != NULL) {
         const char *start = colon_index + 1;
@@ -126,7 +96,7 @@ bdecode_byte_string(struct arena *arena,
         fprintf(stderr, "Invalid encoded value: %s\n", bencoded_value);
         exit(1);
     }
-    char *next = bencoded_value + length + lengthlength + 1;
+    char *next = bencoded_value + length + length_char_count + 1;
     return next;
 }
 
@@ -211,7 +181,7 @@ bdecode(struct arena *arena, belement_t *bencode, char *bencoded_value)
             bdecode_dictionary(arena, (struct bdict *)bencode, bencoded_value);
     }
     else {
-        fprintf(stderr, "Only strings are supported at the moment\n");
+        fprintf(stderr, "Unknown identifier: [%c]\n", bencoded_value[0]);
         exit(1);
     }
 
@@ -372,6 +342,252 @@ bencode(struct strbuf *sb, belement_t *bencode)
     }
 }
 
+void
+error(char *msg)
+{
+    perror(msg);
+    exit(EXIT_SUCCESS);
+}
+char rfc3986[256] = {0};
+char html5[256] = {0};
+
+void
+url_encoder_rfc_tables_init()
+{
+
+    int i;
+
+    for (i = 0; i < 256; i++) {
+
+        rfc3986[i] =
+            isalnum(i) || i == '~' || i == '-' || i == '.' || i == '_' ? i : 0;
+        html5[i] = isalnum(i) || i == '*' || i == '-' || i == '.' || i == '_'
+                       ? i
+                   : (i == ' ') ? '+'
+                                : 0;
+    }
+}
+
+char *
+url_encode(char *table, unsigned char *s, char *enc)
+{
+
+    for (; *s; s++) {
+
+        if (table[*s])
+            *enc = table[*s];
+        else
+            sprintf(enc, "%%%02X", *s);
+        while (*++enc)
+            ;
+    }
+
+    return (enc);
+}
+
+void
+tracker_request(char *url,
+                size_t torrent_file_size,
+                unsigned char *hash,
+                size_t hash_len)
+{
+    printf("url: %s\n", url);
+    struct arena arena = arena_init(1024 * 10);
+
+    url_encoder_rfc_tables_init();
+    char *hash_urlencoded =
+        arena_push(&arena, sizeof(*hash_urlencoded), hash_len * 3 + 1);
+    url_encode(rfc3986, hash, hash_urlencoded);
+    hash_urlencoded[strlen(hash_urlencoded)] = '\0';
+
+    char *tmpurl = strdup(url);
+
+    char *scheme = NULL;
+    char *host = NULL;
+    char *path = NULL;
+    char *port = NULL;
+    char *qport = "6881";
+    char *qpeer_id = "01234567890123456789";
+    size_t schemelen = 0;
+    size_t hostlen = 0;
+    size_t pathlen = 0;
+
+    char *pos = strstr(tmpurl, "://");
+    if (pos) {
+        schemelen = pos - tmpurl;
+        scheme = arena_push(&arena, sizeof(*scheme), schemelen + 1);
+        memcpy(scheme, url, schemelen);
+        scheme[schemelen] = '\0';
+    }
+    tmpurl += (schemelen + 3);
+
+    char *l = tmpurl;
+    char *p = tmpurl;
+    if (*p) {
+        while (*p != '\0' && *p != ':' && *p != '/') {
+            p++;
+        }
+        assert(*p != '\0');
+        size_t hostlen = p - l;
+        host = arena_push(&arena, sizeof(*host), hostlen + 1);
+        memcpy(host, l, hostlen);
+        host[hostlen] = '\0';
+    }
+
+    if (*p == ':') {
+        p++;
+        l = p;
+
+        while (*p != '\0' && *p != '/') {
+            p++;
+        }
+        assert(*p != '\0');
+        size_t portlen = p - l;
+        port = arena_push(&arena, sizeof(*port), portlen + 1);
+        memcpy(port, l, portlen);
+        port[portlen] = '\0';
+    }
+
+    if (*p == '/') {
+        l = p;
+
+        while (*p != '\0') {
+            p++;
+        }
+
+        size_t pathlen = p - l;
+        path = arena_push(&arena, sizeof(*path), pathlen + 1);
+        memcpy(path, l, pathlen);
+        path[pathlen] = '\0';
+    }
+
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    assert(sockfd > 0);
+    if (sockfd < 0) {
+        error("socket failure");
+    }
+
+    struct addrinfo *ai_hints = arena_push(&arena, sizeof(*ai_hints), 1);
+    struct addrinfo *ai_result;
+    ai_hints->ai_family = AF_INET;
+    ai_hints->ai_socktype = SOCK_STREAM;
+    ai_hints->ai_protocol = IPPROTO_TCP;
+
+    char *ai_service = (port != NULL) ? port : scheme;
+    int ai_status = getaddrinfo(host, port, ai_hints, &ai_result);
+    printf("url: %s://%s:%s%s, addrinfo status: %s\n",
+           scheme,
+           host,
+           port,
+           path,
+           (char *)gai_strerror(ai_status));
+    assert(ai_status == 0);
+    if (0 != ai_status) {
+        close(sockfd);
+        error((char *)gai_strerror(ai_status));
+    }
+
+    int connect_success = 0;
+    for (struct addrinfo *ai = ai_result; ai != NULL; ai = ai->ai_next) {
+        if (0 > connect(sockfd, ai->ai_addr, ai->ai_addrlen)) {
+            perror("connect failed");
+            continue;
+        }
+        connect_success = 1;
+        break;
+    }
+
+    freeaddrinfo(ai_result);
+    if (!connect_success) {
+        close(sockfd);
+        error("failed to connect");
+    }
+
+    char request[1024];
+    snprintf(request,
+             sizeof(request),
+             "GET "
+             "%s"
+             "?info_hash=%s"
+             "&peer_id=%s"
+             "&port=%s"
+             "&uploaded=0"
+             "&downloaded=0"
+             "&left=%zu"
+             "&compact=1"
+             " HTTP/1.1\r\n"
+             "Host: %s\r\n"
+             "User-Agent: codecrafters-bittorrent/1.0\r\n"
+             "\r\n",
+             path,
+             hash_urlencoded,
+             qpeer_id,
+             qport,
+             torrent_file_size,
+             host);
+
+    size_t total = 0;
+    size_t request_len = strlen(request);
+    while (total < request_len) {
+        ssize_t bytes = send(sockfd, request + total, request_len - total, 0);
+        if (bytes < 0) {
+            close(sockfd);
+            error("send failed");
+        }
+        total += bytes;
+    }
+
+    char buffer[4096];
+    ssize_t bytes_read;
+    while ((bytes_read = recv(sockfd, buffer, sizeof(buffer) - 1, 0)) < 0) {
+        buffer[bytes_read] = '\0';
+    }
+
+    if (bytes_read < 0) {
+        close(sockfd);
+        error("recv failed");
+    }
+
+    char *response_body = strstr(buffer, "\r\n\r\n");
+    response_body += 4;
+
+    struct bdict tracker_dict = {0};
+    bdecode(&arena, (belement_t *)&tracker_dict, response_body);
+    if (0 == strcmp(tracker_dict.kvpairs[0].key->buffer, "failure reason")) {
+        printf("tracker failure reason: %s\n",
+               tracker_dict.kvpairs[0].element->byte_string.buffer);
+    }
+    else {
+        struct bstr *bpeers = NULL;
+        for (int i = 0; i < tracker_dict.length; i++) {
+            if (0 == strcmp("peers", tracker_dict.kvpairs[i].key->buffer)) {
+                bpeers = (struct bstr *)tracker_dict.kvpairs[i].element;
+                break;
+            }
+        }
+
+        if (bpeers == NULL) {
+            return;
+        }
+
+        uint8_t *ptr = (uint8_t *)bpeers->buffer;
+        while (*ptr != '\0') {
+            char *delim = "";
+            for (int b = 0; b < 4; b++) {
+                printf("%s%u", delim, *ptr);
+                delim = ".";
+                ptr++;
+            }
+            printf(":%u",
+                   (uint16_t)((*ptr) << 8) | (uint16_t)(*(ptr + 1) & 0xFF));
+            printf("\n");
+            ptr += 2;
+        }
+    }
+
+    arena_destroy(&arena);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -403,6 +619,67 @@ main(int argc, char *argv[])
         strbuf_destroy(&sb);
     }
     else if (0 == strcmp(command, "peers")) {
+        char *tracker_url = NULL;
+        char *name = NULL;
+        size_t length = 0;
+        unsigned char info_hash[EVP_MAX_MD_SIZE];
+        uint32_t info_hash_len = 0;
+        size_t piece_length = 0;
+        uint8_t **pieces = NULL;
+        char **piece_hashes = NULL;
+        size_t npieces = 0;
+
+        char filename[4096];
+        size_t len = snprintf(filename, sizeof(filename), "../%s", argv[2]);
+        filename[len] = '\0';
+        FILE *fh = fopen(filename, "rb");
+        assert(fh != NULL);
+        char buffer[4096];
+        size_t read = fread(&buffer, sizeof(*buffer), sizeof(buffer), fh);
+        assert(read > 0);
+        int closed = fclose(fh);
+        assert(closed >= 0);
+
+        printf("torrent file: %*s\n", (int)len, buffer);
+
+        belement_t *elem = arena_push(&arena, sizeof(*elem), 1);
+        bdecode(&arena, elem, buffer);
+
+        struct bdict *dict = &elem->dictionary;
+        for (int i = 0; i < dict->length; i++) {
+            char *key = dict->kvpairs[i].key->buffer;
+            belement_t *value = dict->kvpairs[i].element;
+            if (0 == strcmp(key, "announce") &&
+                value->type == BENCODE_BYTE_STRING) {
+                tracker_url = arena_push(
+                    &arena, sizeof(*tracker_url), value->byte_string.length);
+                memcpy(tracker_url,
+                       value->byte_string.buffer,
+                       value->byte_string.length + 1);
+                tracker_url[value->byte_string.length] = '\0';
+            }
+            else if (0 == strcmp(key, "info") &&
+                     value->type == BENCODE_DICTIONARY) {
+
+                struct bdict info = value->dictionary;
+                struct strbuf sb = strbuf_init(1024 * 64);
+
+                bencode(&sb, (belement_t *)&info);
+
+                OpenSSL_add_all_digests();
+                const EVP_MD *md = EVP_get_digestbyname("SHA1");
+                assert(md && "Failed to get SHA1 digest");
+                // uint32_t md_len = 0;
+                EVP_MD_CTX *md_ctx = EVP_MD_CTX_create();
+                EVP_DigestInit_ex(md_ctx, md, NULL);
+                EVP_DigestUpdate(md_ctx, sb.buffer, sb.length);
+                EVP_DigestFinal_ex(md_ctx, info_hash, &info_hash_len);
+                info_hash[info_hash_len] = '\0';
+                EVP_MD_CTX_destroy(md_ctx);
+            }
+        }
+
+        tracker_request(tracker_url, read, info_hash, info_hash_len);
     }
     else if (0 == strcmp(command, "info")) {
         char *tracker_url = NULL;
@@ -427,6 +704,7 @@ main(int argc, char *argv[])
 
         belement_t *elem = arena_push(&arena, sizeof(*elem), 1);
         bdecode(&arena, elem, buffer);
+
         struct bdict *dict = &elem->dictionary;
         for (int i = 0; i < dict->length; i++) {
             char *key = dict->kvpairs[i].key->buffer;
