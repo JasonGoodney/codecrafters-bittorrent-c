@@ -391,7 +391,6 @@ tracker_request(char *url,
                 unsigned char *hash,
                 size_t hash_len)
 {
-    printf("url: %s\n", url);
     struct arena arena = arena_init(1024 * 10);
 
     url_encoder_rfc_tables_init();
@@ -462,7 +461,6 @@ tracker_request(char *url,
     }
 
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    assert(sockfd > 0);
     if (sockfd < 0) {
         error("socket failure");
     }
@@ -475,13 +473,6 @@ tracker_request(char *url,
 
     char *ai_service = (port != NULL) ? port : scheme;
     int ai_status = getaddrinfo(host, port, ai_hints, &ai_result);
-    printf("url: %s://%s:%s%s, addrinfo status: %s\n",
-           scheme,
-           host,
-           port,
-           path,
-           (char *)gai_strerror(ai_status));
-    assert(ai_status == 0);
     if (0 != ai_status) {
         close(sockfd);
         error((char *)gai_strerror(ai_status));
@@ -548,7 +539,8 @@ tracker_request(char *url,
         error("recv failed");
     }
 
-    char *response_body = strstr(buffer, "\r\n\r\n");
+    char *header_end = "\r\n\r\n";
+    char *response_body = strstr(buffer, header_end);
     response_body += 4;
 
     struct bdict tracker_dict = {0};
@@ -669,7 +661,6 @@ main(int argc, char *argv[])
                 OpenSSL_add_all_digests();
                 const EVP_MD *md = EVP_get_digestbyname("SHA1");
                 assert(md && "Failed to get SHA1 digest");
-                // uint32_t md_len = 0;
                 EVP_MD_CTX *md_ctx = EVP_MD_CTX_create();
                 EVP_DigestInit_ex(md_ctx, md, NULL);
                 EVP_DigestUpdate(md_ctx, sb.buffer, sb.length);
